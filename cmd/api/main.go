@@ -73,6 +73,32 @@ func main() {
 
 	handler.RegisterRoutes(app, handlers, middleware.NewAuth(jwtMgr))
 
+	// Background pruner: hourly (and once at startup) delete idempotency records past
+	// their TTL — already ignored by the app — so the table does not grow unbounded.
+	prunerCtx, stopPruner := context.WithCancel(context.Background())
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		prune := func() {
+			opCtx, cancel := context.WithTimeout(prunerCtx, 30*time.Second)
+			defer cancel()
+			if n, err := repository.PruneExpiredIdempotency(opCtx, pool, cfg.IdempotencyTTL); err != nil {
+				log.Warn().Err(err).Msg("idempotency prune failed")
+			} else if n > 0 {
+				log.Info().Int64("deleted", n).Msg("pruned expired idempotency records")
+			}
+		}
+		prune()
+		for {
+			select {
+			case <-prunerCtx.Done():
+				return
+			case <-ticker.C:
+				prune()
+			}
+		}
+	}()
+
 	go func() {
 		addr := ":" + cfg.AppPort
 		log.Info().Str("addr", addr).Msg("server starting")
@@ -86,6 +112,7 @@ func main() {
 	<-quit
 
 	log.Info().Msg("shutting down")
+	stopPruner()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := app.ShutdownWithContext(ctx); err != nil {

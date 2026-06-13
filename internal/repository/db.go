@@ -41,6 +41,18 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
+// PruneExpiredIdempotency deletes idempotency records older than retention (past
+// their TTL, hence already ignored by the application) and returns how many rows
+// were removed. Intended to be called periodically by a background pruner.
+func PruneExpiredIdempotency(ctx context.Context, pool *pgxpool.Pool, retention time.Duration) (int64, error) {
+	tag, err := pool.Exec(ctx,
+		`DELETE FROM idempotency_records WHERE created_at < $1`, time.Now().Add(-retention))
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 func firstLine(s string) string {
 	for i := 0; i < len(s); i++ {
 		if s[i] == '\n' {

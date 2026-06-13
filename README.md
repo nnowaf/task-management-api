@@ -217,6 +217,11 @@ Behaviors:
    one INSERT can win; others read the stored record. The key is scoped per user and a `request_hash`
    detects body mismatches.
 
+**Retention.** A key is honored for `IDEMPOTENCY_TTL` (default 24h); after that the record is ignored
+and the key may be reused. Cleanup is two-fold: records are removed *lazily* when an expired key is
+reused, and a background **pruner** (`PruneExpiredIdempotency`, run once at startup then hourly)
+deletes records older than the TTL so the table does not grow unbounded.
+
 ---
 
 ## Transactional assignment (`POST /tasks/:id/assign`)
