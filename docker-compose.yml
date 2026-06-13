@@ -1,0 +1,42 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: gdcpay_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: gdcpay_tasks
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d gdcpay_tasks"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    container_name: gdcpay_api
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_PORT: "3000"
+      APP_ENV: development
+      LOG_LEVEL: info
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: gdcpay_tasks
+      DB_SSLMODE: disable
+      JWT_SECRET: jawa-adalah-kunci
+      JWT_EXPIRY: 24h
+      IDEMPOTENCY_TTL: 24h
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:

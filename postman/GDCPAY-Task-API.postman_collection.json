@@ -1,0 +1,400 @@
+{
+  "info": {
+    "name": "GDCPAY Task Management API",
+    "description": "Multi-user Task Management API (Go + Fiber + pgx/PostgreSQL). JWT auth, idempotent task creation (Idempotency-Key), transactional assignment, teams, comments, and audit logs.\n\n**Each request's Body/Params tab documents every field — required and optional — in its description.**\n\nUsage:\n1. Run **Auth > Login** (or Register) first — the token is captured automatically into `token` and every other request inherits it as a Bearer token.\n2. **Tasks > Create** stores the new id into `taskId`; **Teams > Create** stores `teamId`. Register a second user and put their id into `memberUserId` to exercise team membership and assignment.\n3. To demo idempotency, send **Tasks > Create** twice without changing anything — the same `idempotencyKey` is reused and the second call replays the first response. Clear the `idempotencyKey` collection variable to start a new key.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000", "type": "string" },
+    { "key": "token", "value": "", "type": "string" },
+    { "key": "userId", "value": "", "type": "string" },
+    { "key": "taskId", "value": "", "type": "string" },
+    { "key": "teamId", "value": "", "type": "string" },
+    { "key": "memberUserId", "value": "", "type": "string" },
+    { "key": "commentId", "value": "", "type": "string" },
+    { "key": "idempotencyKey", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "auth": { "type": "noauth" },
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{baseUrl}}/health", "host": ["{{baseUrl}}"], "path": ["health"] }
+      }
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const ok = pm.response.code < 300;",
+                  "pm.test('registered', () => pm.expect(ok).to.be.true);",
+                  "if (ok) { pm.collectionVariables.set('userId', pm.response.json().data.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Nowaf Dev\",\n  \"username\": \"nowaf\",\n  \"email\": \"nowaf@example.com\",\n  \"password\": \"secret123\"\n}"
+            },
+            "description": "Create an account. All fields **required**.\n\n| Field | Req | Rules |\n|---|---|---|\n| name | yes | 2–150 chars |\n| username | yes | 3–100 chars, unique |\n| email | yes | valid email, unique |\n| password | yes | 6–72 chars |\n\nReturns the created user (no token — call **Login** to get a JWT).",
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/register", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "register"] }
+          }
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const ok = pm.response.code < 300;",
+                  "pm.test('logged in', () => pm.expect(ok).to.be.true);",
+                  "if (ok) {",
+                  "  const d = pm.response.json().data;",
+                  "  pm.collectionVariables.set('token', d.token);",
+                  "  pm.collectionVariables.set('userId', d.user.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"login\": \"nowaf\",\n  \"password\": \"secret123\"\n}"
+            },
+            "description": "Exchange credentials for a JWT (auto-stored in `token`).\n\n| Field | Req | Rules |\n|---|---|---|\n| login | yes | username **or** email |\n| password | yes | — |",
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "login"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Tasks",
+      "item": [
+        {
+          "name": "Create Task (personal, idempotent)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Reuse the same key so a re-send demonstrates idempotent replay.",
+                  "// Clear the 'idempotencyKey' variable to start a fresh key.",
+                  "if (!pm.collectionVariables.get('idempotencyKey')) {",
+                  "  pm.collectionVariables.set('idempotencyKey', pm.variables.replaceIn('{{$guid}}'));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { pm.collectionVariables.set('taskId', pm.response.json().data.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{idempotencyKey}}", "description": "REQUIRED. UUID. Replaying the same key within the TTL returns the first response without creating a duplicate." }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Ship the release\",\n  \"description\": \"Cut v1.0 and tag it\",\n  \"priority\": \"HIGH\",\n  \"status\": \"TODO\",\n  \"startDate\": \"2026-06-13T09:00:00Z\",\n  \"dueDate\": \"2026-06-20T17:00:00Z\"\n}"
+            },
+            "description": "Create a **personal** task (no team). Header `Idempotency-Key` (UUID) is **required**.\n\n| Field | Req | Rules / Notes |\n|---|---|---|\n| title | **yes** | 1–255 chars |\n| description | no | ≤ 5000 chars |\n| priority | no | `LOW` `MEDIUM` `HIGH` `URGENT` — default `MEDIUM` |\n| status | no | `TODO` `IN_PROGRESS` `DONE` `CANCELED` `IN_REVIEW` — default `TODO` |\n| assignedTo | no | user UUID; defaults to the creator |\n| idTeam | no | team UUID — see **Create Task in Team** |\n| startDate | no | RFC3339 |\n| dueDate | no | RFC3339 |\n\nTo put the task in a team on creation, add `idTeam` (and optionally `assignedTo`) — see the next request.",
+            "url": { "raw": "{{baseUrl}}/api/v1/tasks", "host": ["{{baseUrl}}"], "path": ["api", "v1", "tasks"] }
+          }
+        },
+        {
+          "name": "Create Task in Team",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idempotencyKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { pm.collectionVariables.set('taskId', pm.response.json().data.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{idempotencyKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Team task\",\n  \"priority\": \"MEDIUM\",\n  \"idTeam\": \"{{teamId}}\",\n  \"assignedTo\": \"{{memberUserId}}\"\n}"
+            },
+            "description": "Create a task **inside a team** (set `idTeam`). Requires that you belong to the team.\n\n- `idTeam` — **optional** in general, used here to scope the task to a team you are a member/owner of (else `403`).\n- `assignedTo` — **optional**; if set it must be an **active member** of that team (else `422`).\n\nRun **Teams > Create Team** first (sets `teamId`) and **Teams > Add Member** (set `memberUserId`).",
+            "url": { "raw": "{{baseUrl}}/api/v1/tasks", "host": ["{{baseUrl}}"], "path": ["api", "v1", "tasks"] }
+          }
+        },
+        {
+          "name": "List Tasks",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/tasks?status=TODO&q=&priority=&assignedTo=&page=1&limit=10&sort=created_at desc",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "tasks"],
+              "query": [
+                { "key": "status", "value": "TODO", "description": "optional — TODO | IN_PROGRESS | DONE | CANCELED | IN_REVIEW" },
+                { "key": "q", "value": "", "description": "optional — case-insensitive search in title" },
+                { "key": "priority", "value": "", "description": "optional — LOW | MEDIUM | HIGH | URGENT" },
+                { "key": "assignedTo", "value": "", "description": "optional — filter by assignee user UUID" },
+                { "key": "page", "value": "1", "description": "optional — default 1" },
+                { "key": "limit", "value": "10", "description": "optional — default 10, max 100" },
+                { "key": "sort", "value": "created_at desc", "description": "optional — e.g. 'created_at desc', 'due_date asc'" }
+              ]
+            },
+            "description": "List tasks visible to you (your own + your teams'). **All query params are optional** — delete the ones you don't need. Empty params are ignored. Response includes `meta { page, limit, total, totalPages }`."
+          }
+        },
+        {
+          "name": "Get Task",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "Fetch one task by id (path param `id`, required).",
+            "url": { "raw": "{{baseUrl}}/api/v1/tasks/{{taskId}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "tasks", "{{taskId}}"] }
+          }
+        },
+        {
+          "name": "Update Task",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"IN_PROGRESS\",\n  \"priority\": \"URGENT\",\n  \"description\": \"Patch release\"\n}"
+            },
+            "description": "Partial update — **all fields optional**; only the fields you send change.\n\n| Field | Req | Rules / Notes |\n|---|---|---|\n| title | no | 1–255 chars |\n| description | no | ≤ 5000 chars |\n| priority | no | `LOW` `MEDIUM` `HIGH` `URGENT` |\n| status | no | `TODO` `IN_PROGRESS` `DONE` `CANCELED` `IN_REVIEW` |\n| idTeam | no | move the task into a team you belong to — see **Move Task to Team** |\n| startDate | no | RFC3339 |\n| dueDate | no | RFC3339 |",
+            "url": { "raw": "{{baseUrl}}/api/v1/tasks/{{taskId}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "tasks", "{{taskId}}"] }
+          }
+        },
+        {
+          "name": "Move Task to Team",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idTeam\": \"{{teamId}}\"\n}"
+            },
+            "description": "Move an existing task into (or between) a team via `PUT /tasks/{id}` with `idTeam`. You must be a member/owner of the target team (else `403`). Run **Teams > Create Team** first so `teamId` is set.",
+            "url": { "raw": "{{baseUrl}}/api/v1/tasks/{{taskId}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "tasks", "{{taskId}}"] }
+          }
+        },
+        {
+          "name": "Assign Task (transactional)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"assignedTo\": \"{{memberUserId}}\"\n}"
+            },
+            "description": "Reassign a team task to another **active member**, in a single transaction (assignee + audit log + notification). Task must already have a team.\n\n| Field | Req | Rules |\n|---|---|---|\n| assignedTo | **yes** | UUID of an active member of the task's team |",
+            "url": { "raw": "{{baseUrl}}/api/v1/tasks/{{taskId}}/assign", "host": ["{{baseUrl}}"], "path": ["api", "v1", "tasks", "{{taskId}}", "assign"] }
+          }
+        },
+        {
+          "name": "Task Logs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "Audit trail for a task (CREATE / UPDATE_TASK / UPDATE_STATUS / ASSIGN_USER / DELETE).",
+            "url": { "raw": "{{baseUrl}}/api/v1/tasks/{{taskId}}/logs", "host": ["{{baseUrl}}"], "path": ["api", "v1", "tasks", "{{taskId}}", "logs"] }
+          }
+        },
+        {
+          "name": "Delete Task",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "description": "Soft-delete a task and cascade-soft-delete its comments. Task logs are preserved (a DELETE entry is written first). Creator or team owner only.",
+            "url": { "raw": "{{baseUrl}}/api/v1/tasks/{{taskId}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "tasks", "{{taskId}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Comments",
+      "item": [
+        {
+          "name": "Create Comment",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { pm.collectionVariables.set('commentId', pm.response.json().data.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"comment\": \"Looks good, merging.\"\n}" },
+            "description": "Add a comment to a task you can access.\n\n| Field | Req | Rules |\n|---|---|---|\n| comment | **yes** | 1–2000 chars |",
+            "url": { "raw": "{{baseUrl}}/api/v1/tasks/{{taskId}}/comments", "host": ["{{baseUrl}}"], "path": ["api", "v1", "tasks", "{{taskId}}", "comments"] }
+          }
+        },
+        {
+          "name": "List Comments",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "List comments on a task (oldest first).",
+            "url": { "raw": "{{baseUrl}}/api/v1/tasks/{{taskId}}/comments", "host": ["{{baseUrl}}"], "path": ["api", "v1", "tasks", "{{taskId}}", "comments"] }
+          }
+        },
+        {
+          "name": "Update Comment",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"comment\": \"Edited: merged and deployed.\"\n}" },
+            "description": "Edit your own comment.\n\n| Field | Req | Rules |\n|---|---|---|\n| comment | no | 1–2000 chars (omit to leave unchanged) |",
+            "url": { "raw": "{{baseUrl}}/api/v1/comments/{{commentId}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "comments", "{{commentId}}"] }
+          }
+        },
+        {
+          "name": "Delete Comment",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "description": "Delete a comment (author, or the parent task's owner).",
+            "url": { "raw": "{{baseUrl}}/api/v1/comments/{{commentId}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "comments", "{{commentId}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Teams",
+      "item": [
+        {
+          "name": "Create Team",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code < 300) { pm.collectionVariables.set('teamId', pm.response.json().data.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Platform Team\"\n}" },
+            "description": "Create a team (you become its owner). Sets `teamId`.\n\n| Field | Req | Rules |\n|---|---|---|\n| name | **yes** | 2–150 chars |",
+            "url": { "raw": "{{baseUrl}}/api/v1/teams", "host": ["{{baseUrl}}"], "path": ["api", "v1", "teams"] }
+          }
+        },
+        {
+          "name": "List Teams",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "List teams you own or actively belong to.",
+            "url": { "raw": "{{baseUrl}}/api/v1/teams", "host": ["{{baseUrl}}"], "path": ["api", "v1", "teams"] }
+          }
+        },
+        {
+          "name": "Get Team",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "Fetch a team with its members.",
+            "url": { "raw": "{{baseUrl}}/api/v1/teams/{{teamId}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "teams", "{{teamId}}"] }
+          }
+        },
+        {
+          "name": "Add Member",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"{{memberUserId}}\",\n  \"status\": \"active\",\n  \"expiredAt\": \"2026-12-31T23:59:59Z\"\n}" },
+            "description": "Add a user to the team. Register a second user and put their id in `memberUserId`.\n\n| Field | Req | Rules / Notes |\n|---|---|---|\n| userId | **yes** | UUID of the user to add |\n| status | no | `active` `expired` `block` — default `active` |\n| expiredAt | no | RFC3339; membership expiry |",
+            "url": { "raw": "{{baseUrl}}/api/v1/teams/{{teamId}}/members", "host": ["{{baseUrl}}"], "path": ["api", "v1", "teams", "{{teamId}}", "members"] }
+          }
+        },
+        {
+          "name": "List Members",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "List members of a team with their user summaries.",
+            "url": { "raw": "{{baseUrl}}/api/v1/teams/{{teamId}}/members", "host": ["{{baseUrl}}"], "path": ["api", "v1", "teams", "{{teamId}}", "members"] }
+          }
+        },
+        {
+          "name": "Update Member",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"block\",\n  \"expiredAt\": \"2026-12-31T23:59:59Z\"\n}" },
+            "description": "Update a member's status/expiry (path: teamId + userId).\n\n| Field | Req | Rules / Notes |\n|---|---|---|\n| status | **yes** | `active` `expired` `block` |\n| expiredAt | no | RFC3339 |",
+            "url": { "raw": "{{baseUrl}}/api/v1/teams/{{teamId}}/members/{{memberUserId}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "teams", "{{teamId}}", "members", "{{memberUserId}}"] }
+          }
+        },
+        {
+          "name": "Remove Member",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "description": "Remove (soft-delete) a member from the team.",
+            "url": { "raw": "{{baseUrl}}/api/v1/teams/{{teamId}}/members/{{memberUserId}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "teams", "{{teamId}}", "members", "{{memberUserId}}"] }
+          }
+        }
+      ]
+    }
+  ]
+}
